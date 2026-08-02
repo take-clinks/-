@@ -1,15 +1,15 @@
 import os
+
 from flask import Flask, render_template_string, request, make_response
 from google import genai
-from google.genai import types
 
 app = Flask(__name__)
 
-APP_VERSION = "2026-08-GEMINI-2-5-FLASH-NEW-SDK-v1"
+APP_VERSION = "2026-08-GEMINI-3-6-FLASH-INTERACTIONS-v1"
 
-# Google AI Studioの無料枠画面で利用可能と確認できたモデルを固定指定する。
-# 自動でモデル一覧から選択しないため、利用不可の古いモデルを誤選択しない。
-GEMINI_MODEL = "gemini-2.5-flash"
+# Google公式クイックスタートで確認した現在のモデル名。
+# 自動探索・候補切替は行わず、この公式モデルだけを使用する。
+GEMINI_MODEL = "gemini-3.6-flash"
 
 api_key = os.environ.get("GEMINI_API_KEY")
 
@@ -226,28 +226,24 @@ def generate_gemini_content(prompt_text):
 
     try:
         app.logger.warning(
-            "Gemini API試行: モデル=%s",
+            "Gemini Interactions API試行: モデル=%s",
             GEMINI_MODEL
         )
 
-        response = gemini_client.models.generate_content(
+        interaction = gemini_client.interactions.create(
             model=GEMINI_MODEL,
-            contents=prompt_text,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=2048
-            )
+            input=prompt_text
         )
 
-        result_text = getattr(response, "text", None)
+        result_text = getattr(interaction, "output_text", "") or ""
 
-        if not result_text or not result_text.strip():
+        if not result_text.strip():
             raise RuntimeError(
                 "Gemini APIから評価結果テキストを取得できませんでした。"
             )
 
         app.logger.warning(
-            "Gemini API応答成功: モデル=%s",
+            "Gemini Interactions API応答成功: モデル=%s",
             GEMINI_MODEL
         )
 
@@ -255,25 +251,27 @@ def generate_gemini_content(prompt_text):
 
     except Exception as error:
         error_text = str(error)
+
         app.logger.exception(
-            "Gemini API呼び出し失敗: モデル=%s",
+            "Gemini Interactions API呼び出し失敗: モデル=%s",
             GEMINI_MODEL
         )
 
-        if "429" in error_text:
+        if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
             raise RuntimeError(
                 "Gemini無料枠の回数またはトークン上限に達しました。"
                 "少し待ってから再実行してください。"
             ) from error
 
-        if "404" in error_text:
+        if "404" in error_text or "NOT_FOUND" in error_text:
             raise RuntimeError(
                 "Geminiモデルが利用できません。"
-                "Renderのログを確認してください。"
+                "Render LogsでGemini Interactions APIのエラー内容を確認してください。"
             ) from error
 
         raise RuntimeError(
-            f"Gemini API呼び出しエラー: {error_text}"
+            "Gemini API呼び出し中にエラーが発生しました。"
+            f"詳細: {error_text}"
         ) from error
 
 def build_html_response(**kwargs):
