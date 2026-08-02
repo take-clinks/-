@@ -1,12 +1,13 @@
 import os
-from flask import Flask, render_template_string, request, Response, make_response
+from flask import Flask, render_template_string, request, make_response
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-APP_VERSION = "2025-02-UI-CSS-SEPARATED-v1"
+APP_VERSION = "2025-02-GEMINI-MODEL-FALLBACK-v1"
 
 api_key = os.environ.get("GEMINI_API_KEY")
+
 if api_key:
     genai.configure(api_key=api_key)
 
@@ -142,6 +143,7 @@ button:disabled {
   color: #dc2626;
   border-radius: 4px;
   font-size: 13px;
+  line-height: 1.6;
 }
 """
 
@@ -208,31 +210,180 @@ PROMPT = """【最重要命令】すべての出力を「日本語」で行っ�
 総合判定：
 [総合判定文]"""
 
-def get_active_gemini_model():
+# 画像に出ていた404の原因モデル。
+# このモデルは絶対に選択しない。
+BLOCKED_GEMINI_MODELS = {
+    "models/gemini-2.5-flash",
+}
+
+# まず優先して試すGeminiモデル。
+# 実際に利用できない場合は、下の自動検出候補へ切り替える。
+PREFERRED_GEMINI_MODELS = [
+    "models/gemini-2.5-flash-lite",
+    "models/gemini-2.0-flash",
+    "models/gemini-2.5-pro",
+]
+
+def is_unavailable_model_error(error):
+    error_text = str(error).lower()
+
+    unavailable_messages = [
+        "404",
+        "not found",
+        "no longer available",
+        "not available",
+        "model not found",
+        "unsupported model",
+    ]
+
+    return any(message in error_text for message in unavailable_messages)
+
+def is_text_generation_model(model_info):
+    model_name = model_info.name.lower()
+
+    if "generateContent" not in model_info.supported_generation_methods:
+        return False
+
+    if not model_name.startswith("models/gemini"):
+        return False
+
+    if model_name in BLOCKED_GEMINI_MODELS:
+        return False
+
+    excluded_words = [
+        "embedding",
+        "image",
+        "imagen",
+        "veo",
+        "tts",
+        "live",
+        "robotics",
+        "computer-use",
+    ]
+
+    if any(word in model_name for word in excluded_words):
+        return False
+
+    return True
+
+def get_gemini_model_candidates():
+    candidates = []
+
+    # 固定優先候補を最初に登録する。
+    for model_name in PREFERRED_GEMINI_MODELS:
+        if model_name.lower() not in BLOCKED_GEMINI_MODELS:
+            candidates.append(model_name)
+
     try:
-        models = list(genai.list_models())
+        available_models = list(genai.list_models())
 
-        for model_info in models:
-            if (
-                "generateContent" in model_info.supported_generation_methods
-                and "flash" in model_info.name.lower()
-            ):
-                return genai.GenerativeModel(model_info.name)
+        discovered_models = []
 
-        for model_info in models:
-            if "generateContent" in model_info.supported_generation_methods:
-                return genai.GenerativeModel(model_info.name)
+        for model_info in available_models:
+            if is_text_generation_model(model_info):
+                discovered_models.append(model_info.name)
 
-    except Exception:
-        pass
+        # Flash系を優先し、その後に他のGeminiテキストモデルを試す。
+        discovered_models.sort(
+            key=lambda model_name: (
+                "flash" not in model_name.lower(),
+                "lite" not in model_name.lower(),
+                model_name.lower(),
+            )
+        )
 
-    return genai.GenerativeModel("models/gemini-1.5-flash")
+        for model_name in discovered_models:
+            if model_name not in candidates:
+                candidates.append(model_name)
+
+    except Exception as error:
+        app.logger.warning(
+            "Geminiモデル一覧の取得に失敗しました。固定候補で続行します: %s",
+            str(error)
+        )
+
+    unique_candidates = []
+
+    for model_name in candidates:
+        normalized_name = model_name.lower()
+
+        if normalized_name in BLOCKED_GEMINI_MODELS:
+            continue
+
+        if model_name not in unique_candidates:
+            unique_candidates.append(model_name)
+
+    return unique_candidates
+
+def generate_gemini_content(prompt_text):
+    candidates = get_gemini_model_candidates()
+    attempted_errors = []
+
+    if not candidates:
+        raise RuntimeError(
+            "Gemini APIで利用候補モデルを取得できませんでした。"
+            "GEMINI_API_KEY とRenderログを確認してください。"
+        )
+
+    for model_name in candidates:
+        try:
+            app.logger.warning("Geminiモデル試行: %s", model_name)
+
+            model = genai.GenerativeModel(model_name)
+            gemini_response = model.generate_content(prompt_text)
+
+            result_text = getattr(gemini_response, "text", "").strip()
+
+            if not result_text:
+                raise RuntimeError(
+                    f"Geminiモデルから評価結果テキストを取得できませんでした。"
+                    f"使用モデル: {model_name}"
+                )
+
+            app.logger.warning("Gemini応答成功: %s", model_name)
+
+            return result_text
+
+        except Exception as error:
+            error_text = str(error)
+
+            if is_unavailable_model_error(error):
+                attempted_errors.append(f"{model_name}: {error_text}")
+
+                app.logger.warning(
+                    "Geminiモデル利用不可。次の候補を試行します。モデル=%s エラー=%s",
+                    model_name,
+                    error_text
+                )
+                continue
+
+            raise RuntimeError(
+                f"Gemini API呼び出しエラー。使用モデル: {model_name} / 詳細: {error_text}"
+            ) from error
+
+    error_summary = " | ".join(attempted_errors)
+
+    app.logger.error(
+        "すべてのGeminiモデル候補が利用不可でした: %s",
+        error_summary
+    )
+
+    raise RuntimeError(
+        "利用可能なGeminiモデルが見つかりませんでした。"
+        "RenderのLogsで「Geminiモデル試行」の行を確認してください。"
+    )
 
 def build_html_response(**kwargs):
-    rendered = render_template_string(RAW_HTML, app_version=APP_VERSION, **kwargs)
+    rendered = render_template_string(
+        RAW_HTML,
+        app_version=APP_VERSION,
+        **kwargs
+    )
+
     response = make_response(rendered, 200)
     response.headers["Content-Type"] = "text/html; charset=utf-8"
     response.headers["X-App-Version"] = APP_VERSION
+
     return response
 
 @app.route("/assets/app.css", methods=["GET"])
@@ -241,12 +392,18 @@ def app_css():
     response.headers["Content-Type"] = "text/css; charset=utf-8"
     response.headers["Cache-Control"] = "public, max-age=300"
     response.headers["X-App-Version"] = APP_VERSION
+
     return response
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "GET":
-        return build_html_response(a="", b="", res=None, err=None)
+        return build_html_response(
+            a="",
+            b="",
+            res=None,
+            err=None
+        )
 
     a = request.form.get("company_a", "").strip()
     b = request.form.get("company_b", "").strip()
@@ -264,29 +421,35 @@ def index():
             a=a,
             b=b,
             res=None,
-            err="GEMINI_API_KEY が設定されていません。Renderの環境変数を確認してください。"
+            err=(
+                "GEMINI_API_KEY が設定されていません。"
+                "RenderのEnvironmentで環境変数を確認してください。"
+            )
         )
 
     try:
-        model = get_active_gemini_model()
         prompt_text = PROMPT.format(a=a, b=b)
-        gemini_response = model.generate_content(prompt_text)
-        result_text = getattr(gemini_response, "text", "").strip()
+        result_text = generate_gemini_content(prompt_text)
 
-        if not result_text:
-            raise RuntimeError("Gemini APIから評価結果テキストを取得できませんでした。")
+        return build_html_response(
+            a=a,
+            b=b,
+            res=result_text,
+            err=None
+        )
 
-        return build_html_response(a=a, b=b, res=result_text, err=None)
+    except Exception as error:
+        app.logger.exception("AI応答エラー")
 
-    except Exception as e:
         return build_html_response(
             a=a,
             b=b,
             res=None,
-            err=f"AI応答エラー: {str(e)}"
+            err=f"AI応答エラー: {str(error)}"
         )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+
 
