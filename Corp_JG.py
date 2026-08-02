@@ -7,7 +7,7 @@ app = Flask(__name__)
 # Gemini APIクライアントの初期化 (環境変数 GEMINI_API_KEY を参照)
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Web画面のHTMLテンプレート（HTMLレスポンスを明示指定）
+# Web画面のHTMLテンプレート
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -100,7 +100,7 @@ PROMPT_TEMPLATE = """
 
 受注側の商品・サービスとの適合度：[点数] / 25
 取引先の事業規模・受注可能性　　：[点数] / 20
-取引の継続性　　　　　　　　　　：[点数] / 15
+取引の継続性　　　　　 catalogue　：[点数] / 15
 売上拡大の可能性　　　　　　　　：[点数] / 15
 戦略的メリット　　　　　　　　　：[点数] / 10
 信用・支払面の安心度　　　　　　：[点数] / 10
@@ -145,8 +145,10 @@ def index():
 
     try:
         prompt = PROMPT_TEMPLATE.format(company_a=company_a, company_b=company_b)
+        
+        # gemini-1.5-flash モデルを指定して呼び出し
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=prompt,
         )
         html = render_template_string(HTML_TEMPLATE, company_a=company_a, company_b=company_b, result=response.text, error=None)
