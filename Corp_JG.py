@@ -1,50 +1,150 @@
 import os
-from flask import Flask, render_template_string, request, Response
+from flask import Flask, render_template_string, request, Response, make_response
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# Gemini APIキーのセットアップ
+APP_VERSION = "2025-02-UI-CSS-SEPARATED-v1"
+
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# Web画面HTML（構造破綻・文字化け完全防止）
-RAW_HTML = """
+RAW_HTML = """<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="app-version" content="{{app_version}}">
+  <title>営業候補評価アプリ</title>
+  <link rel="stylesheet" href="/assets/app.css?v={{app_version}}">
+</head>
+<body>
+  <main class="box">
+    <h1>営業候補評価アプリ</h1>
 
+    <form method="POST" action="/">
+      <label for="company_a">1. 受注側会社名（自社等）</label>
+      <input
+        id="company_a"
+        type="text"
+        name="company_a"
+        value="{{a}}"
+        required
+        placeholder="例: 株式会社〇〇"
+      >
 
+      <label for="company_b">2. 取引先会社名（検討先）</label>
+      <input
+        id="company_b"
+        type="text"
+        name="company_b"
+        value="{{b}}"
+        required
+        placeholder="例: 株式会社△△"
+      >
 
+      <button type="submit">営業可能性を評価する</button>
+    </form>
 
-営業候補評価アプリ
+    {% if err %}
+      <div class="err">{{err}}</div>
+    {% endif %}
 
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8fafc;color:#1e293b;padding:16px;margin:0;}
-.box{max-width:600px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}
-h1{font-size:18px;text-align:center;margin-bottom:16px;color:#0f172a;}
-label{display:block;margin-top:12px;font-weight:bold;font-size:14px;color:#334155;}
-input[type=text]{width:100%;padding:10px;margin-top:4px;border:1px solid #cbd5e1;border-radius:4px;box-sizing:border-box;font-size:15px;}
-button{width:100%;padding:12px;margin-top:16px;background:#2563eb;color:#fff;border:none;border-radius:4px;font-size:16px;font-weight:bold;cursor:pointer;}
-button:disabled{background:#94a3b8;}
-.res{margin-top:20px;padding:12px;background:#f1f5f9;border-radius:4px;white-space:pre-wrap;font-family:monospace;font-size:13px;line-height:1.6;border:1px solid #cbd5e1;}
-.err{margin-top:16px;padding:10px;background:#fee2e2;color:#dc2626;border-radius:4px;font-size:13px;}
+    {% if res %}
+      <div class="res">{{res}}</div>
+    {% endif %}
+  </main>
+</body>
+</html>"""
 
+CSS = """body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f8fafc;
+  color: #1e293b;
+  padding: 16px;
+  margin: 0;
+}
 
+.box {
+  max-width: 600px;
+  margin: 0 auto;
+  background: #ffffff;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
 
+h1 {
+  font-size: 18px;
+  text-align: center;
+  margin: 0 0 16px;
+  color: #0f172a;
+}
 
-営業候補評価アプリ
+label {
+  display: block;
+  margin-top: 12px;
+  font-weight: bold;
+  font-size: 14px;
+  color: #334155;
+}
 
-1. 受注側会社名（自社等）
+input[type="text"] {
+  width: 100%;
+  padding: 10px;
+  margin-top: 4px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  box-sizing: border-box;
+  font-size: 15px;
+}
 
-2. 取引先会社名（検討先）
+button {
+  width: 100%;
+  padding: 12px;
+  margin-top: 16px;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
 
-営業可能性を評価する
+button:hover {
+  background: #1d4ed8;
+}
 
-{% if err %}{{err}}{% endif %}
-{% if res %}{{res}}{% endif %}
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
 
+.res {
+  margin-top: 20px;
+  padding: 12px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  border: 1px solid #cbd5e1;
+}
 
+.err {
+  margin-top: 16px;
+  padding: 10px;
+  background: #fee2e2;
+  color: #dc2626;
+  border-radius: 4px;
+  font-size: 13px;
+}
 """
 
-# プロンプト定義（日本語厳格強制・仕様書完全準拠）
 PROMPT = """【最重要命令】すべての出力を「日本語」で行ってください。英語での出力は固く禁止します。
 挨拶、前置き、思考プロセス、説明文などは一切出力せず、指定された出力フォーマットのみを直接出力してください。
 
@@ -99,7 +199,7 @@ PROMPT = """【最重要命令】すべての出力を「日本語」で行っ�
 取引の継続性　　　　　　　　　　：[点数] / 15
 売上拡大の可能性　　　　　　　　：[点数] / 15
 戦略的メリット　　　　　　　　　：[点数] / 10
-信用・支払面の安心度　　　 generate：[点数] / 10
+信用・支払面の安心度　　　　　　：[点数] / 10
 公開情報の十分さ　　　　　　　　：[点数] / 5
 
 合計：
@@ -108,50 +208,85 @@ PROMPT = """【最重要命令】すべての出力を「日本語」で行っ�
 総合判定：
 [総合判定文]"""
 
-# 404エラーを100%回避する動的モデル自動検索関数
 def get_active_gemini_model():
     try:
-        # APIキーで実際に利用可能な有効モデル一覧を動的に取得
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                # 高速な flash モデルを最優先選択
-                if 'flash' in m.name:
-                    return genai.GenerativeModel(m.name)
-        # flashがない場合、利用可能な最初のモデルを選択
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                return genai.GenerativeModel(m.name)
+        models = list(genai.list_models())
+
+        for model_info in models:
+            if (
+                "generateContent" in model_info.supported_generation_methods
+                and "flash" in model_info.name.lower()
+            ):
+                return genai.GenerativeModel(model_info.name)
+
+        for model_info in models:
+            if "generateContent" in model_info.supported_generation_methods:
+                return genai.GenerativeModel(model_info.name)
+
     except Exception:
         pass
-    
-    # フォールバック（絶対パス指定）
-    return genai.GenerativeModel('models/gemini-1.5-flash')
 
-# レスポンス生成（mimetypeでHTMLを厳格付与）
-def build_html_response(template_str, **kwargs):
-    rendered = render_template_string(template_str, **kwargs)
-    return Response(rendered, status=200, mimetype='text/html; charset=utf-8')
+    return genai.GenerativeModel("models/gemini-1.5-flash")
 
-@app.route('/', methods=['GET', 'POST'])
+def build_html_response(**kwargs):
+    rendered = render_template_string(RAW_HTML, app_version=APP_VERSION, **kwargs)
+    response = make_response(rendered, 200)
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    response.headers["X-App-Version"] = APP_VERSION
+    return response
+
+@app.route("/assets/app.css", methods=["GET"])
+def app_css():
+    response = make_response(CSS, 200)
+    response.headers["Content-Type"] = "text/css; charset=utf-8"
+    response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["X-App-Version"] = APP_VERSION
+    return response
+
+@app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == 'GET':
-        return build_html_response(RAW_HTML, a='', b='', res=None, err=None)
-    
-    a = request.form.get('company_a', '').strip()
-    b = request.form.get('company_b', '').strip()
-    
+    if request.method == "GET":
+        return build_html_response(a="", b="", res=None, err=None)
+
+    a = request.form.get("company_a", "").strip()
+    b = request.form.get("company_b", "").strip()
+
     if not a or not b:
-        return build_html_response(RAW_HTML, a=a, b=b, res=None, err="両方の会社名を入力してください。")
-    
+        return build_html_response(
+            a=a,
+            b=b,
+            res=None,
+            err="両方の会社名を入力してください。"
+        )
+
+    if not api_key:
+        return build_html_response(
+            a=a,
+            b=b,
+            res=None,
+            err="GEMINI_API_KEY が設定されていません。Renderの環境変数を確認してください。"
+        )
+
     try:
-        # 動的に検出された有効モデルでAI実行
         model = get_active_gemini_model()
         prompt_text = PROMPT.format(a=a, b=b)
-        res = model.generate_content(prompt_text)
-        return build_html_response(RAW_HTML, a=a, b=b, res=res.text, err=None)
-    except Exception as e:
-        return build_html_response(RAW_HTML, a=a, b=b, res=None, err=f"AI応答エラー: {str(e)}")
+        gemini_response = model.generate_content(prompt_text)
+        result_text = getattr(gemini_response, "text", "").strip()
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+        if not result_text:
+            raise RuntimeError("Gemini APIから評価結果テキストを取得できませんでした。")
+
+        return build_html_response(a=a, b=b, res=result_text, err=None)
+
+    except Exception as e:
+        return build_html_response(
+            a=a,
+            b=b,
+            res=None,
+            err=f"AI応答エラー: {str(e)}"
+        )
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
+
