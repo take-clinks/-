@@ -1,15 +1,22 @@
 import os
 from flask import Flask, render_template_string, request, make_response
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 
-APP_VERSION = "2025-02-GEMINI-MODEL-FALLBACK-v1"
+APP_VERSION = "2026-08-GEMINI-2-5-FLASH-NEW-SDK-v1"
+
+# Google AI Studioの無料枠画面で利用可能と確認できたモデルを固定指定する。
+# 自動でモデル一覧から選択しないため、利用不可の古いモデルを誤選択しない。
+GEMINI_MODEL = "gemini-2.5-flash"
 
 api_key = os.environ.get("GEMINI_API_KEY")
 
+gemini_client = None
+
 if api_key:
-    genai.configure(api_key=api_key)
+    gemini_client = genai.Client(api_key=api_key)
 
 RAW_HTML = """<!doctype html>
 <html lang="ja">
@@ -210,168 +217,64 @@ PROMPT = """【最重要命令】すべての出力を「日本語」で行っ�
 総合判定：
 [総合判定文]"""
 
-# 画像に出ていた404の原因モデル。
-# このモデルは絶対に選択しない。
-BLOCKED_GEMINI_MODELS = {
-    "models/gemini-2.5-flash",
-}
-
-# まず優先して試すGeminiモデル。
-# 実際に利用できない場合は、下の自動検出候補へ切り替える。
-PREFERRED_GEMINI_MODELS = [
-    "models/gemini-2.5-flash-lite",
-    "models/gemini-2.0-flash",
-    "models/gemini-2.5-pro",
-]
-
-def is_unavailable_model_error(error):
-    error_text = str(error).lower()
-
-    unavailable_messages = [
-        "404",
-        "not found",
-        "no longer available",
-        "not available",
-        "model not found",
-        "unsupported model",
-    ]
-
-    return any(message in error_text for message in unavailable_messages)
-
-def is_text_generation_model(model_info):
-    model_name = model_info.name.lower()
-
-    if "generateContent" not in model_info.supported_generation_methods:
-        return False
-
-    if not model_name.startswith("models/gemini"):
-        return False
-
-    if model_name in BLOCKED_GEMINI_MODELS:
-        return False
-
-    excluded_words = [
-        "embedding",
-        "image",
-        "imagen",
-        "veo",
-        "tts",
-        "live",
-        "robotics",
-        "computer-use",
-    ]
-
-    if any(word in model_name for word in excluded_words):
-        return False
-
-    return True
-
-def get_gemini_model_candidates():
-    candidates = []
-
-    # 固定優先候補を最初に登録する。
-    for model_name in PREFERRED_GEMINI_MODELS:
-        if model_name.lower() not in BLOCKED_GEMINI_MODELS:
-            candidates.append(model_name)
+def generate_gemini_content(prompt_text):
+    if gemini_client is None:
+        raise RuntimeError(
+            "GEMINI_API_KEY が設定されていません。"
+            "RenderのEnvironmentを確認してください。"
+        )
 
     try:
-        available_models = list(genai.list_models())
+        app.logger.warning(
+            "Gemini API試行: モデル=%s",
+            GEMINI_MODEL
+        )
 
-        discovered_models = []
-
-        for model_info in available_models:
-            if is_text_generation_model(model_info):
-                discovered_models.append(model_info.name)
-
-        # Flash系を優先し、その後に他のGeminiテキストモデルを試す。
-        discovered_models.sort(
-            key=lambda model_name: (
-                "flash" not in model_name.lower(),
-                "lite" not in model_name.lower(),
-                model_name.lower(),
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=2048
             )
         )
 
-        for model_name in discovered_models:
-            if model_name not in candidates:
-                candidates.append(model_name)
+        result_text = getattr(response, "text", None)
+
+        if not result_text or not result_text.strip():
+            raise RuntimeError(
+                "Gemini APIから評価結果テキストを取得できませんでした。"
+            )
+
+        app.logger.warning(
+            "Gemini API応答成功: モデル=%s",
+            GEMINI_MODEL
+        )
+
+        return result_text.strip()
 
     except Exception as error:
-        app.logger.warning(
-            "Geminiモデル一覧の取得に失敗しました。固定候補で続行します: %s",
-            str(error)
+        error_text = str(error)
+        app.logger.exception(
+            "Gemini API呼び出し失敗: モデル=%s",
+            GEMINI_MODEL
         )
 
-    unique_candidates = []
-
-    for model_name in candidates:
-        normalized_name = model_name.lower()
-
-        if normalized_name in BLOCKED_GEMINI_MODELS:
-            continue
-
-        if model_name not in unique_candidates:
-            unique_candidates.append(model_name)
-
-    return unique_candidates
-
-def generate_gemini_content(prompt_text):
-    candidates = get_gemini_model_candidates()
-    attempted_errors = []
-
-    if not candidates:
-        raise RuntimeError(
-            "Gemini APIで利用候補モデルを取得できませんでした。"
-            "GEMINI_API_KEY とRenderログを確認してください。"
-        )
-
-    for model_name in candidates:
-        try:
-            app.logger.warning("Geminiモデル試行: %s", model_name)
-
-            model = genai.GenerativeModel(model_name)
-            gemini_response = model.generate_content(prompt_text)
-
-            result_text = getattr(gemini_response, "text", "").strip()
-
-            if not result_text:
-                raise RuntimeError(
-                    f"Geminiモデルから評価結果テキストを取得できませんでした。"
-                    f"使用モデル: {model_name}"
-                )
-
-            app.logger.warning("Gemini応答成功: %s", model_name)
-
-            return result_text
-
-        except Exception as error:
-            error_text = str(error)
-
-            if is_unavailable_model_error(error):
-                attempted_errors.append(f"{model_name}: {error_text}")
-
-                app.logger.warning(
-                    "Geminiモデル利用不可。次の候補を試行します。モデル=%s エラー=%s",
-                    model_name,
-                    error_text
-                )
-                continue
-
+        if "429" in error_text:
             raise RuntimeError(
-                f"Gemini API呼び出しエラー。使用モデル: {model_name} / 詳細: {error_text}"
+                "Gemini無料枠の回数またはトークン上限に達しました。"
+                "少し待ってから再実行してください。"
             ) from error
 
-    error_summary = " | ".join(attempted_errors)
+        if "404" in error_text:
+            raise RuntimeError(
+                "Geminiモデルが利用できません。"
+                "Renderのログを確認してください。"
+            ) from error
 
-    app.logger.error(
-        "すべてのGeminiモデル候補が利用不可でした: %s",
-        error_summary
-    )
-
-    raise RuntimeError(
-        "利用可能なGeminiモデルが見つかりませんでした。"
-        "RenderのLogsで「Geminiモデル試行」の行を確認してください。"
-    )
+        raise RuntimeError(
+            f"Gemini API呼び出しエラー: {error_text}"
+        ) from error
 
 def build_html_response(**kwargs):
     rendered = render_template_string(
@@ -414,17 +317,6 @@ def index():
             b=b,
             res=None,
             err="両方の会社名を入力してください。"
-        )
-
-    if not api_key:
-        return build_html_response(
-            a=a,
-            b=b,
-            res=None,
-            err=(
-                "GEMINI_API_KEY が設定されていません。"
-                "RenderのEnvironmentで環境変数を確認してください。"
-            )
         )
 
     try:
