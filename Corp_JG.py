@@ -4,61 +4,49 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# APIキーの初期化
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# Web画面HTML（構造破綻を防ぐ安全設計）
-HTML_CODE = """
+HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>営業候補評価アプリ</title>
+<style>
+body{font-family:sans-serif;background:#f8fafc;padding:16px;margin:0;}
+.box{max-width:600px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}
+h1{font-size:18px;text-align:center;margin-bottom:16px;color:#0f172a;}
+label{display:block;margin-top:12px;font-weight:bold;font-size:14px;color:#334155;}
+input[type=text]{width:100%;padding:10px;margin-top:4px;border:1px solid #cbd5e1;border-radius:4px;box-sizing:border-box;font-size:15px;}
+button{width:100%;padding:12px;margin-top:16px;background:#2563eb;color:#fff;border:none;border-radius:4px;font-size:16px;font-weight:bold;cursor:pointer;}
+.res{margin-top:20px;padding:12px;background:#f1f5f9;border-radius:4px;white-space:pre-wrap;font-family:monospace;font-size:13px;line-height:1.6;border:1px solid #cbd5e1;}
+.err{margin-top:16px;padding:10px;background:#fee2e2;color:#dc2626;border-radius:4px;font-size:13px;}
+</style>
+</head>
+<body>
+<div class="box">
+<h1>営業候補評価アプリ</h1>
+<form method="POST">
+<label>1. 受注側会社名（自社等）</label>
+<input type="text" name="company_a" value="{{a}}" required placeholder="例: 株式会社〇〇">
+<label>2. 取引先会社名（検討先）</label>
+<input type="text" name="company_b" value="{{b}}" required placeholder="例: 株式会社△△">
+<button type="submit">営業可能性を評価する</button>
+</form>
+{% if err %}<div class="err">{{err}}</div>{% endif %}
+{% if res %}<div class="res">{{res}}</div>{% endif %}
+</div>
+</body>
+</html>"""
 
-
-    
-    
-    営業候補評価アプリ
-    
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; padding: 20px; margin: 0; }
-        .card { max-width: 600px; margin: 0 auto; background: #ffffff; padding: 24px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-        h1 { font-size: 1.25rem; text-align: center; color: #0f172a; margin-top: 0; margin-bottom: 4px; }
-        .sub { text-align: center; color: #64748b; font-size: 0.85rem; margin-bottom: 20px; }
-        .form-group { margin-bottom: 16px; }
-        label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9rem; }
-        input { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box; font-size: 1rem; }
-        button { width: 100%; padding: 14px; background: #2563eb; color: #ffffff; border: none; border-radius: 8px; font-weight: bold; font-size: 1rem; cursor: pointer; margin-top: 8px; }
-        button:disabled { background: #94a3b8; }
-        .loading { display: none; text-align: center; color: #2563eb; font-weight: bold; margin-top: 16px; }
-        .result { margin-top: 20px; padding: 16px; background: #f1f5f9; border-radius: 8px; font-family: monospace; white-space: pre-wrap; word-break: break-all; border: 1px solid #cbd5e1; font-size: 0.85rem; line-height: 1.6; }
-        .error { margin-top: 16px; padding: 12px; background: #fef2f2; color: #dc2626; border-radius: 8px; font-size: 0.85rem; }
-    
-
-
-    
-        営業候補評価アプリ
-        SES & AIドリブン開発の二軸自動評価システム
-        
-            
-                1. 受注側会社名（自社等）
-                
-            
-            
-                2. 取引先会社名（検討先）
-                
-            
-            営業可能性を評価する
-        
-        🔍 公開情報を調査・分析中...(約10〜20秒かかります)
-        {% if error %}{{ error }}{% endif %}
-        {% if result %}{{ result }}{% endif %}
-    
-
-"""
-
-PROMPT_TEMPLATE = """あなたは法人間取引の営業評価AIです。
+PROMPT = """あなたは法人間取引の営業評価AIです。
 以下の「受注側会社」と「取引先」について、公開情報を調査・分析し、指定の配点とフォーマットに従って営業適合度を評価してください。
 
 ■入力情報
-受注側会社：{company_a}
-取引先：{company_b}
+受注側会社：{a}
+取引先：{b}
 
 ■制約事項・ルール
 1. 取引先の本社所在地を公開情報から確認し出力すること。確認できない場合は「確認できません」とすること。
@@ -74,7 +62,7 @@ PROMPT_TEMPLATE = """あなたは法人間取引の営業評価AIです。
 ■出力フォーマット（以下を厳格に再現すること）
 
 取引先：
-{company_b}
+{b}
 
 取引先本社所在地：
 [所在地または確認できません]
@@ -86,7 +74,7 @@ PROMPT_TEMPLATE = """あなたは法人間取引の営業評価AIです。
 取引先の事業規模・受注可能性　　：[点数] / 20
 取引の継続性　　　　　　　　　　：[点数] / 15
 売上拡大の可能性　　　　　　　　：[点数] / 15
-戦略的メリット　　　　　　　　　：[点数] / 10
+戦略的メリット　　full　　　　：[点数] / 10
 信用・支払面の安心度　　　　　　：[点数] / 10
 公開情報の十分さ　　　　　　　　：[点数] / 5
 
@@ -116,21 +104,20 @@ PROMPT_TEMPLATE = """あなたは法人間取引の営業評価AIです。
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'GET':
-        return render_template_string(HTML_CODE, company_a='', company_b='', result=None, error=None)
+        return render_template_string(HTML, a='', b='', res=None, err=None)
     
-    company_a = request.form.get('company_a', '').strip()
-    company_b = request.form.get('company_b', '').strip()
+    a = request.form.get('company_a', '').strip()
+    b = request.form.get('company_b', '').strip()
     
-    if not company_a or not company_b:
-        return render_template_string(HTML_CODE, company_a=company_a, company_b=company_b, result=None, error="両方の会社名を入力してください。")
+    if not a or not b:
+        return render_template_string(HTML, a=a, b=b, res=None, err="両方の会社名を入力してください。")
     
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = PROMPT_TEMPLATE.format(company_a=company_a, company_b=company_b)
-        response = model.generate_content(prompt)
-        return render_template_string(HTML_CODE, company_a=company_a, company_b=company_b, result=response.text, error=None)
+        res = model.generate_content(PROMPT.format(a=a, b=b))
+        return render_template_string(HTML, a=a, b=b, res=res.text, err=None)
     except Exception as e:
-        return render_template_string(HTML_CODE, company_a=company_a, company_b=company_b, result=None, error=f"評価処理中にエラーが発生しました: {str(e)}")
+        return render_template_string(HTML, a=a, b=b, res=None, err=str(e))
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
