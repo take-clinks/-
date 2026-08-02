@@ -5,7 +5,8 @@ from google import genai
 
 app = Flask(__name__)
 
-APP_VERSION = "2026-08-GEMINI-3-6-FLASH-INTERACTIONS-v1"
+# UI更新をブラウザへ確実に反映するため、バージョン番号だけ更新しています。
+APP_VERSION = "2026-08-GEMINI-3-6-FLASH-INTERACTIONS-LOADING-v1"
 
 # Google公式クイックスタートで確認した現在のモデル名。
 # 自動探索・候補切替は行わず、この公式モデルだけを使用する。
@@ -31,7 +32,7 @@ RAW_HTML = """<!doctype html>
   <main class="box">
     <h1>営業候補評価アプリ</h1>
 
-    <form method="POST" action="/">
+    <form id="evaluation-form" method="POST" action="/">
       <label for="company_a">1. 受注側会社名（自社等）</label>
       <input
         id="company_a"
@@ -52,7 +53,24 @@ RAW_HTML = """<!doctype html>
         placeholder="例: 株式会社△△"
       >
 
-      <button type="submit">営業可能性を評価する</button>
+      <button id="submit-button" type="submit">
+        営業可能性を評価する
+      </button>
+
+      <div
+        id="loading-message"
+        class="loading"
+        role="status"
+        aria-live="polite"
+        aria-hidden="true"
+        hidden
+      >
+        <span class="spinner" aria-hidden="true"></span>
+        <span>
+          Geminiで企業情報を分析・評価しています。<br>
+          評価結果が表示されるまで、しばらくお待ちください。
+        </span>
+      </div>
     </form>
 
     {% if err %}
@@ -63,6 +81,86 @@ RAW_HTML = """<!doctype html>
       <div class="res">{{res}}</div>
     {% endif %}
   </main>
+
+  <script>
+    (function () {
+      const form = document.getElementById("evaluation-form");
+      const submitButton = document.getElementById("submit-button");
+      const loadingMessage = document.getElementById("loading-message");
+      const companyAInput = document.getElementById("company_a");
+      const companyBInput = document.getElementById("company_b");
+
+      if (!form || !submitButton || !loadingMessage) {
+        return;
+      }
+
+      form.addEventListener("submit", function (event) {
+        /*
+         * required入力欄が空の場合はブラウザ標準の入力チェックを優先し、
+         * 分析中UIへ変更しません。
+         */
+        if (!form.checkValidity()) {
+          return;
+        }
+
+        /*
+         * 二重クリック、連打、Enter連続入力による二重送信を防止します。
+         */
+        if (form.dataset.submitting === "true") {
+          event.preventDefault();
+          return;
+        }
+
+        form.dataset.submitting = "true";
+        form.setAttribute("aria-busy", "true");
+
+        /*
+         * 送信は継続しつつ、UIだけを分析中状態へ変更します。
+         */
+        submitButton.disabled = true;
+        submitButton.innerHTML =
+          '<span class="spinner button-spinner" aria-hidden="true"></span>分析中です…';
+
+        /*
+         * disabled にするとPOST時に入力値が送信されないため、
+         * readonly を使います。
+         */
+        if (companyAInput) {
+          companyAInput.readOnly = true;
+        }
+
+        if (companyBInput) {
+          companyBInput.readOnly = true;
+        }
+
+        loadingMessage.hidden = false;
+        loadingMessage.setAttribute("aria-hidden", "false");
+      });
+
+      /*
+       * ブラウザの「戻る」操作などで画面が復元された場合、
+       * ボタンが分析中のまま残らないように初期状態へ戻します。
+       */
+      window.addEventListener("pageshow", function () {
+        form.dataset.submitting = "false";
+        form.removeAttribute("aria-busy");
+
+        submitButton.disabled = false;
+        submitButton.textContent = "営業可能性を評価する";
+
+        if (companyAInput) {
+          companyAInput.readOnly = false;
+        }
+
+        if (companyBInput) {
+          companyBInput.readOnly = false;
+        }
+
+        loadingMessage.hidden = true;
+        loadingMessage.setAttribute("aria-hidden", "true");
+      });
+    })();
+  </script>
 </body>
 </html>"""
 
@@ -108,6 +206,12 @@ input[type="text"] {
   font-size: 15px;
 }
 
+input[type="text"]:read-only {
+  background: #f8fafc;
+  color: #475569;
+  cursor: wait;
+}
+
 button {
   width: 100%;
   padding: 12px;
@@ -127,7 +231,52 @@ button:hover {
 
 button:disabled {
   background: #94a3b8;
-  cursor: not-allowed;
+  cursor: wait;
+}
+
+.loading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.loading[hidden] {
+  display: none;
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border: 2px solid rgba(37, 99, 235, 0.25);
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.button-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border-color: rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .res {
@@ -341,5 +490,4 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-
 
