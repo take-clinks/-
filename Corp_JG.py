@@ -10,7 +10,7 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 # Web画面のHTMLテンプレート
 HTML_TEMPLATE = """
 
-
+　
     
     
     法人間取引 営業候補評価アプリ
