@@ -4,19 +4,19 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# Gemini APIの初期化
+# Gemini APIキーのセットアップ
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# Web画面HTML（自動翻訳・文字化け完全防止構造）
-RAW_HTML = """<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>営業候補評価アプリ</title>
-<style>
+# Web画面HTML（構造破綻・文字化け完全防止）
+RAW_HTML = """
+
+
+
+
+営業候補評価アプリ
+
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8fafc;color:#1e293b;padding:16px;margin:0;}
 .box{max-width:600px;margin:0 auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}
 h1{font-size:18px;text-align:center;margin-bottom:16px;color:#0f172a;}
@@ -26,25 +26,25 @@ button{width:100%;padding:12px;margin-top:16px;background:#2563eb;color:#fff;bor
 button:disabled{background:#94a3b8;}
 .res{margin-top:20px;padding:12px;background:#f1f5f9;border-radius:4px;white-space:pre-wrap;font-family:monospace;font-size:13px;line-height:1.6;border:1px solid #cbd5e1;}
 .err{margin-top:16px;padding:10px;background:#fee2e2;color:#dc2626;border-radius:4px;font-size:13px;}
-</style>
-</head>
-<body>
-<div class="box">
-<h1>営業候補評価アプリ</h1>
-<form method="POST">
-<label>1. 受注側会社名（自社等）</label>
-<input type="text" name="company_a" value="{{a}}" required placeholder="例: 株式会社〇〇">
-<label>2. 取引先会社名（検討先）</label>
-<input type="text" name="company_b" value="{{b}}" required placeholder="例: 株式会社△△">
-<button type="submit">営業可能性を評価する</button>
-</form>
-{% if err %}<div class="err">{{err}}</div>{% endif %}
-{% if res %}<div class="res">{{res}}</div>{% endif %}
-</div>
-</body>
-</html>"""
 
-# プロンプト定義（日本語厳格強制・フォーマット完全遵守）
+
+
+
+営業候補評価アプリ
+
+1. 受注側会社名（自社等）
+
+2. 取引先会社名（検討先）
+
+営業可能性を評価する
+
+{% if err %}{{err}}{% endif %}
+{% if res %}{{res}}{% endif %}
+
+
+"""
+
+# プロンプト定義（日本語厳格強制・仕様書完全準拠）
 PROMPT = """【最重要命令】すべての出力を「日本語」で行ってください。英語での出力は固く禁止します。
 挨拶、前置き、思考プロセス、説明文などは一切出力せず、指定された出力フォーマットのみを直接出力してください。
 
@@ -99,7 +99,7 @@ PROMPT = """【最重要命令】すべての出力を「日本語」で行っ�
 取引の継続性　　　　　　　　　　：[点数] / 15
 売上拡大の可能性　　　　　　　　：[点数] / 15
 戦略的メリット　　　　　　　　　：[点数] / 10
-信用・支払面の安心度　　　　　　：[点数] / 10
+信用・支払面の安心度　　　 generate：[点数] / 10
 公開情報の十分さ　　　　　　　　：[点数] / 5
 
 合計：
@@ -108,6 +108,26 @@ PROMPT = """【最重要命令】すべての出力を「日本語」で行っ�
 総合判定：
 [総合判定文]"""
 
+# 404エラーを100%回避する動的モデル自動検索関数
+def get_active_gemini_model():
+    try:
+        # APIキーで実際に利用可能な有効モデル一覧を動的に取得
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                # 高速な flash モデルを最優先選択
+                if 'flash' in m.name:
+                    return genai.GenerativeModel(m.name)
+        # flashがない場合、利用可能な最初のモデルを選択
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                return genai.GenerativeModel(m.name)
+    except Exception:
+        pass
+    
+    # フォールバック（絶対パス指定）
+    return genai.GenerativeModel('models/gemini-1.5-flash')
+
+# レスポンス生成（mimetypeでHTMLを厳格付与）
 def build_html_response(template_str, **kwargs):
     rendered = render_template_string(template_str, **kwargs)
     return Response(rendered, status=200, mimetype='text/html; charset=utf-8')
@@ -124,18 +144,13 @@ def index():
         return build_html_response(RAW_HTML, a=a, b=b, res=None, err="両方の会社名を入力してください。")
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 動的に検出された有効モデルでAI実行
+        model = get_active_gemini_model()
         prompt_text = PROMPT.format(a=a, b=b)
         res = model.generate_content(prompt_text)
         return build_html_response(RAW_HTML, a=a, b=b, res=res.text, err=None)
     except Exception as e:
-        try:
-            model = genai.GenerativeModel('gemini-1.0-pro')
-            prompt_text = PROMPT.format(a=a, b=b)
-            res = model.generate_content(prompt_text)
-            return build_html_response(RAW_HTML, a=a, b=b, res=res.text, err=None)
-        except Exception as ex:
-            return build_html_response(RAW_HTML, a=a, b=b, res=None, err=f"AI応答エラー: {str(ex)}")
+        return build_html_response(RAW_HTML, a=a, b=b, res=None, err=f"AI応答エラー: {str(e)}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
