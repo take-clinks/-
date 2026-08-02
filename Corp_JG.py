@@ -1,20 +1,20 @@
 import os
 from flask import Flask, Response, render_template_string, request
-from google import genai
+import google.generativeai as genai
 
 app = Flask(__name__)
 
-# Gemini APIクライアントの初期化 (環境変数 GEMINI_API_KEY を参照)
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+# 安定版Gemini APIの初期化
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 # Web画面のHTMLテンプレート
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>法人間取引 営業候補評価アプリ</title>
-    <style>
+HTML_TEMPLATE = """
+
+
+    
+    
+    法人間取引 営業候補評価アプリ
+    
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 16px; }
         .container { max-width: 600px; margin: 0 auto; background: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
         h1 { font-size: 1.25rem; font-weight: bold; color: #0f172a; margin-bottom: 4px; text-align: center; }
@@ -27,45 +27,45 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .loading { display: none; text-align: center; margin-top: 20px; font-weight: bold; color: #2563eb; }
         .result-box { margin-top: 20px; padding: 16px; background: #f1f5f9; border-radius: 8px; font-family: monospace; white-space: pre-wrap; word-break: break-all; font-size: 0.9rem; line-height: 1.6; border: 1px solid #cbd5e1; }
         .error { color: #dc2626; background: #fef2f2; padding: 12px; border-radius: 8px; margin-top: 16px; font-size: 0.9rem; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>営業候補評価アプリ</h1>
-        <p class="sub">SES & AIドリブン開発の二軸自動評価システム</p>
-        
-        <form method="POST" action="/" onsubmit="showLoading()">
-            <div class="form-group">
-                <label for="company_a">1. 受注側会社名（自社等）</label>
-                <input type="text" id="company_a" name="company_a" placeholder="例: 株式会社〇〇" value="{{ company_a }}" required>
-            </div>
-            <div class="form-group">
-                <label for="company_b">2. 取引先会社名（検討先）</label>
-                <input type="text" id="company_b" name="company_b" placeholder="例: 株式会社△△" value="{{ company_b }}" required>
-            </div>
-            <button type="submit" id="submit-btn">営業可能性を評価する</button>
-        </form>
+    
 
-        <div id="loading" class="loading">🔍 公開情報を調査・分析中...<br><small style="font-weight:normal; color:#64748b;">(約10〜20秒かかります)</small></div>
+
+    
+        営業候補評価アプリ
+        SES & AIドリブン開発の二軸自動評価システム
+        
+        
+            
+                1. 受注側会社名（自社等）
+                
+            
+            
+                2. 取引先会社名（検討先）
+                
+            
+            営業可能性を評価する
+        
+
+        🔍 公開情報を調査・分析中...(約10〜20秒かかります)
 
         {% if error %}
-            <div class="error">{{ error }}</div>
+            {{ error }}
         {% endif %}
 
         {% if result %}
-            <div class="result-box">{{ result }}</div>
+            {{ result }}
         {% endif %}
-    </div>
+    
 
-    <script>
+    
         function showLoading() {
             document.getElementById('loading').style.display = 'block';
             document.getElementById('submit-btn').disabled = true;
             document.getElementById('submit-btn').innerText = '評価を実行中...';
         }
-    </script>
-</body>
-</html>"""
+    
+
+"""
 
 # プロンプト定義
 PROMPT_TEMPLATE = """
@@ -100,7 +100,7 @@ PROMPT_TEMPLATE = """
 
 受注側の商品・サービスとの適合度：[点数] / 25
 取引先の事業規模・受注可能性　　：[点数] / 20
-取引の継続性　　　　　 catalogue　：[点数] / 15
+取引の継続性　　　　　　　　　　：[点数] / 15
 売上拡大の可能性　　　　　　　　：[点数] / 15
 戦略的メリット　　　　　　　　　：[点数] / 10
 信用・支払面の安心度　　　　　　：[点数] / 10
@@ -119,7 +119,7 @@ PROMPT_TEMPLATE = """
 取引先の事業規模・受注可能性　　：[点数] / 20
 取引の継続性　　　　　　　　　　：[点数] / 15
 売上拡大の可能性　　　　　　　　：[点数] / 15
-戦略的メリット　　　　　　　　　：[点数] / 10
+戦略的メリット　　Object　　　：[点数] / 10
 信用・支払面の安心度　　　　　　：[点数] / 10
 公開情報の十分さ　　　　　　　　：[点数] / 5
 
@@ -146,11 +146,10 @@ def index():
     try:
         prompt = PROMPT_TEMPLATE.format(company_a=company_a, company_b=company_b)
         
-        # gemini-1.5-flash モデルを指定して呼び出し
-        response = client.models.generate_content(
-            model='gemini-1.5-flash',
-            contents=prompt,
-        )
+        # 安定版モデル呼び出し
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        
         html = render_template_string(HTML_TEMPLATE, company_a=company_a, company_b=company_b, result=response.text, error=None)
         return Response(html, mimetype='text/html; charset=utf-8')
     except Exception as e:
