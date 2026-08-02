@@ -1,16 +1,15 @@
-import base64
 import os
 from flask import Flask, render_template_string, request, Response
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# Gemini APIキーのセットアップ
+# Gemini APIの初期化
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# HTML構造（自動翻訳による破壊を物理遮断するBase64保持）
+# Web画面HTML（自動翻訳・文字化け完全防止構造）
 RAW_HTML = """<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -45,26 +44,29 @@ button:disabled{background:#94a3b8;}
 </body>
 </html>"""
 
-# プロンプト定義（仕様書完全準拠）
-PROMPT = """あなたは法人間取引の営業評価AIです。
-以下の「受注側会社」と「取引先」について、公開情報を調査・分析し、指定の配点とフォーマットに従って営業適合度を評価してください。
+# プロンプト定義（日本語厳格強制・フォーマット完全遵守）
+PROMPT = """【最重要命令】すべての出力を「日本語」で行ってください。英語での出力は固く禁止します。
+挨拶、前置き、思考プロセス、説明文などは一切出力せず、指定された出力フォーマットのみを直接出力してください。
+
+あなたは法人間取引の営業評価AIです。
+以下の「受注側会社」と「取引先」について公開情報を調査・分析し、指定の配点とフォーマットに従って営業適合度を日本語で評価してください。
 
 ■入力情報
 受注側会社：{a}
 取引先：{b}
 
-■制約事項・ルール
-1. 取引先の本社所在地を公開情報から確認し出力すること。確認できない場合は「確認できません」とすること。
+■評価ルール・配点基準
+1. 取引先の本社所在地を公開情報から確認し出力すること（確認できない場合は「確認できません」とすること）。
 2. 公開情報から確認できない内容は推測で補完しないこと。
 3. 評価は「SES・システム開発評価」と「AIドリブン開発評価」の2区分を独立して各100点満点で評価すること（合算点・平均点は作成しない）。
-4. 判定基準：
+4. 総合判定の基準：
    - 80～100点：優先的に営業検討
    - 60～79点：有望
    - 40～59点：慎重に検討
    - 0～39点：営業優先度低め
-5. 【最重要】理由文、自由コメント、アドバイス、追加確認事項等は一切出力しないこと。
+5. 理由文、自由コメント、アドバイス、追加確認事項等は一切出力しないこと。
 
-■出力フォーマット（以下を厳格に再現すること）
+■出力フォーマット（以下の日本語フォーマットをそのまま出力すること）
 
 取引先：
 {b}
@@ -106,42 +108,6 @@ PROMPT = """あなたは法人間取引の営業評価AIです。
 総合判定：
 [総合判定文]"""
 
-# 404エラー完全防止用マルチモデル自動試行関数
-def generate_with_fallback(prompt_text):
-    candidate_models = [
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-pro',
-        'gemini-2.0-flash',
-        'gemini-1.0-pro',
-        'gemini-pro'
-    ]
-    last_error = None
-    for model_name in candidate_models:
-        try:
-            m = genai.GenerativeModel(model_name)
-            res = m.generate_content(prompt_text)
-            if res and res.text:
-                return res.text
-        except Exception as e:
-            last_error = e
-            continue
-            
-    try:
-        for m_info in genai.list_models():
-            if 'generateContent' in m_info.supported_generation_methods:
-                try:
-                    m = genai.GenerativeModel(m_info.name)
-                    res = m.generate_content(prompt_text)
-                    if res and res.text:
-                        return res.text
-                except Exception:
-                    continue
-    except Exception as e:
-        last_error = e
-
-    raise last_error if last_error else Exception("利用可能なGeminiモデルが見つかりませんでした。")
-
-# レスポンス生成（mimetypeでHTMLを厳格付与）
 def build_html_response(template_str, **kwargs):
     rendered = render_template_string(template_str, **kwargs)
     return Response(rendered, status=200, mimetype='text/html; charset=utf-8')
@@ -158,11 +124,18 @@ def index():
         return build_html_response(RAW_HTML, a=a, b=b, res=None, err="両方の会社名を入力してください。")
     
     try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt_text = PROMPT.format(a=a, b=b)
-        res_text = generate_with_fallback(prompt_text)
-        return build_html_response(RAW_HTML, a=a, b=b, res=res_text, err=None)
+        res = model.generate_content(prompt_text)
+        return build_html_response(RAW_HTML, a=a, b=b, res=res.text, err=None)
     except Exception as e:
-        return build_html_response(RAW_HTML, a=a, b=b, res=None, err=f"AI応答エラー: {str(e)}")
+        try:
+            model = genai.GenerativeModel('gemini-1.0-pro')
+            prompt_text = PROMPT.format(a=a, b=b)
+            res = model.generate_content(prompt_text)
+            return build_html_response(RAW_HTML, a=a, b=b, res=res.text, err=None)
+        except Exception as ex:
+            return build_html_response(RAW_HTML, a=a, b=b, res=None, err=f"AI応答エラー: {str(ex)}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
