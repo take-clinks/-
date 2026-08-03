@@ -6,7 +6,7 @@ from google import genai
 app = Flask(__name__)
 
 # UI更新をブラウザへ確実に反映するため、バージョン番号だけ更新しています。
-APP_VERSION = "2026-08-GEMINI-3-6-FLASH-INTERACTIONS-LOADING-v1"
+APP_VERSION = "2026-08-GEMINI-3-6-FLASH-INTERACTIONS-LOADING-v2"
 
 # Google公式クイックスタートで確認した現在のモデル名。
 # 自動探索・候補切替は行わず、この公式モデルだけを使用する。
@@ -74,11 +74,11 @@ RAW_HTML = """<!doctype html>
     </form>
 
     {% if err %}
-      <div class="err">{{err}}</div>
+      <div id="result-error" class="err">{{err}}</div>
     {% endif %}
 
     {% if res %}
-      <div class="res">{{res}}</div>
+      <div id="result-success" class="res">{{res}}</div>
     {% endif %}
   </main>
 
@@ -135,6 +135,22 @@ RAW_HTML = """<!doctype html>
 
         loadingMessage.hidden = false;
         loadingMessage.setAttribute("aria-hidden", "false");
+
+        /*
+         * 2回目以降の検索時、前回の評価結果・エラー表示が
+         * 画面に残ったまま分析中表示と同時に見えてしまう問題への対処。
+         * 新しい結果はサーバーから返るHTML全体に含まれているため、
+         * ここでは古い表示を一時的に隠すだけでよい。
+         */
+        const previousResult = document.getElementById("result-success");
+        if (previousResult) {
+          previousResult.hidden = true;
+        }
+
+        const previousError = document.getElementById("result-error");
+        if (previousError) {
+          previousError.hidden = true;
+        }
       });
 
       /*
@@ -158,6 +174,16 @@ RAW_HTML = """<!doctype html>
 
         loadingMessage.hidden = true;
         loadingMessage.setAttribute("aria-hidden", "true");
+
+        const previousResult = document.getElementById("result-success");
+        if (previousResult) {
+          previousResult.hidden = false;
+        }
+
+        const previousError = document.getElementById("result-error");
+        if (previousError) {
+          previousError.hidden = false;
+        }
       });
     })();
   </script>
@@ -490,4 +516,4 @@ def index():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-
+    
