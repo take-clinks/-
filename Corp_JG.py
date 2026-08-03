@@ -1,4 +1,6 @@
 import os
+import json
+import re
 
 from flask import Flask, render_template_string, request, make_response
 from google import genai
@@ -6,7 +8,7 @@ from google import genai
 app = Flask(__name__)
 
 # UI更新をブラウザへ確実に反映するため、バージョン番号だけ更新しています。
-APP_VERSION = "2026-08-GEMINI-3-6-FLASH-INTERACTIONS-LOADING-v2"
+APP_VERSION = "2026-08-GEMINI-3-6-FLASH-JSON-TABLE-v1"
 
 # Google公式クイックスタートで確認した現在のモデル名。
 # 自動探索・候補切替は行わず、この公式モデルだけを使用する。
@@ -77,8 +79,62 @@ RAW_HTML = """<!doctype html>
       <div id="result-error" class="err">{{err}}</div>
     {% endif %}
 
-    {% if res %}
-      <div id="result-success" class="res">{{res}}</div>
+    {% if result %}
+      <div id="result-success" class="result-wrap">
+
+        <div class="company-info">
+          <div class="company-info-row">
+            <span class="company-info-label">取引先</span>
+            <span class="company-info-value">{{result.company_b}}</span>
+          </div>
+          <div class="company-info-row">
+            <span class="company-info-label">本社所在地</span>
+            <span class="company-info-value">{{result.headquarters}}</span>
+          </div>
+        </div>
+
+        <div class="eval-grid">
+
+          <div class="eval-card">
+            <h2 class="eval-title">SES・システム開発評価</h2>
+            <table class="eval-table">
+              <tbody>
+                <tr><td>商品・サービス適合度</td><td>{{result.ses.fit}} / 25</td></tr>
+                <tr><td>事業規模・受注可能性</td><td>{{result.ses.scale}} / 20</td></tr>
+                <tr><td>取引の継続性</td><td>{{result.ses.continuity}} / 15</td></tr>
+                <tr><td>売上拡大の可能性</td><td>{{result.ses.growth}} / 15</td></tr>
+                <tr><td>戦略的メリット</td><td>{{result.ses.strategy}} / 10</td></tr>
+                <tr><td>信用・支払面の安心度</td><td>{{result.ses.trust}} / 10</td></tr>
+                <tr><td>公開情報の十分さ</td><td>{{result.ses.info}} / 5</td></tr>
+                <tr class="total-row"><td>合計</td><td>{{result.ses.total}} / 100</td></tr>
+              </tbody>
+            </table>
+            <div class="judgement-badge judgement-{{result.ses.level}}">
+              総合判定：{{result.ses.judgement}}
+            </div>
+          </div>
+
+          <div class="eval-card">
+            <h2 class="eval-title">AIドリブン開発評価</h2>
+            <table class="eval-table">
+              <tbody>
+                <tr><td>商品・サービス適合度</td><td>{{result.ai.fit}} / 25</td></tr>
+                <tr><td>事業規模・受注可能性</td><td>{{result.ai.scale}} / 20</td></tr>
+                <tr><td>取引の継続性</td><td>{{result.ai.continuity}} / 15</td></tr>
+                <tr><td>売上拡大の可能性</td><td>{{result.ai.growth}} / 15</td></tr>
+                <tr><td>戦略的メリット</td><td>{{result.ai.strategy}} / 10</td></tr>
+                <tr><td>信用・支払面の安心度</td><td>{{result.ai.trust}} / 10</td></tr>
+                <tr><td>公開情報の十分さ</td><td>{{result.ai.info}} / 5</td></tr>
+                <tr class="total-row"><td>合計</td><td>{{result.ai.total}} / 100</td></tr>
+              </tbody>
+            </table>
+            <div class="judgement-badge judgement-{{result.ai.level}}">
+              総合判定：{{result.ai.judgement}}
+            </div>
+          </div>
+
+        </div>
+      </div>
     {% endif %}
   </main>
 
@@ -95,17 +151,10 @@ RAW_HTML = """<!doctype html>
       }
 
       form.addEventListener("submit", function (event) {
-        /*
-         * required入力欄が空の場合はブラウザ標準の入力チェックを優先し、
-         * 分析中UIへ変更しません。
-         */
         if (!form.checkValidity()) {
           return;
         }
 
-        /*
-         * 二重クリック、連打、Enter連続入力による二重送信を防止します。
-         */
         if (form.dataset.submitting === "true") {
           event.preventDefault();
           return;
@@ -114,17 +163,10 @@ RAW_HTML = """<!doctype html>
         form.dataset.submitting = "true";
         form.setAttribute("aria-busy", "true");
 
-        /*
-         * 送信は継続しつつ、UIだけを分析中状態へ変更します。
-         */
         submitButton.disabled = true;
         submitButton.innerHTML =
           '<span class="spinner button-spinner" aria-hidden="true"></span>分析中です…';
 
-        /*
-         * disabled にするとPOST時に入力値が送信されないため、
-         * readonly を使います。
-         */
         if (companyAInput) {
           companyAInput.readOnly = true;
         }
@@ -136,12 +178,6 @@ RAW_HTML = """<!doctype html>
         loadingMessage.hidden = false;
         loadingMessage.setAttribute("aria-hidden", "false");
 
-        /*
-         * 2回目以降の検索時、前回の評価結果・エラー表示が
-         * 画面に残ったまま分析中表示と同時に見えてしまう問題への対処。
-         * 新しい結果はサーバーから返るHTML全体に含まれているため、
-         * ここでは古い表示を一時的に隠すだけでよい。
-         */
         const previousResult = document.getElementById("result-success");
         if (previousResult) {
           previousResult.hidden = true;
@@ -153,10 +189,6 @@ RAW_HTML = """<!doctype html>
         }
       });
 
-      /*
-       * ブラウザの「戻る」操作などで画面が復元された場合、
-       * ボタンが分析中のまま残らないように初期状態へ戻します。
-       */
       window.addEventListener("pageshow", function () {
         form.dataset.submitting = "false";
         form.removeAttribute("aria-busy");
@@ -199,7 +231,7 @@ CSS = """body {
 }
 
 .box {
-  max-width: 600px;
+  max-width: 900px;
   margin: 0 auto;
   background: #ffffff;
   padding: 20px;
@@ -305,19 +337,6 @@ button:disabled {
   }
 }
 
-.res {
-  margin-top: 20px;
-  padding: 12px;
-  background: #f1f5f9;
-  border-radius: 4px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  border: 1px solid #cbd5e1;
-}
-
 .err {
   margin-top: 16px;
   padding: 10px;
@@ -327,70 +346,293 @@ button:disabled {
   font-size: 13px;
   line-height: 1.6;
 }
+
+.result-wrap {
+  margin-top: 20px;
+}
+
+.company-info {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.company-info-row {
+  display: flex;
+  gap: 8px;
+  font-size: 14px;
+  padding: 2px 0;
+}
+
+.company-info-label {
+  font-weight: bold;
+  color: #334155;
+  flex: 0 0 90px;
+}
+
+.company-info-value {
+  color: #0f172a;
+}
+
+.eval-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .eval-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.eval-card {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.eval-title {
+  font-size: 14px;
+  margin: 0 0 8px;
+  color: #0f172a;
+  border-bottom: 2px solid #2563eb;
+  padding-bottom: 6px;
+}
+
+.eval-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.eval-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.eval-table td:last-child {
+  text-align: right;
+  white-space: nowrap;
+  font-weight: bold;
+  width: 70px;
+}
+
+.eval-table .total-row td {
+  border-top: 2px solid #94a3b8;
+  border-bottom: none;
+  font-size: 14px;
+  padding-top: 8px;
+}
+
+.judgement-badge {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.judgement-high {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
+.judgement-mid-high {
+  background: #dbeafe;
+  color: #1e40af;
+  border: 1px solid #93c5fd;
+}
+
+.judgement-mid-low {
+  background: #fef9c3;
+  color: #854d0e;
+  border: 1px solid #fde047;
+}
+
+.judgement-low {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
 """
 
-PROMPT = """【最重要命令】すべての出力を「日本語」で行ってください。英語での出力は固く禁止します。
-挨拶、前置き、思考プロセス、説明文などは一切出力せず、指定された出力フォーマットのみを直接出力してください。
+PROMPT = """【最重要命令】以下の指示に厳密に従い、有効なJSONのみを出力してください。
+JSON以外の文字（説明文、前置き、後書き、コードブロック記号```等）は一切出力しないでください。
+すべての文字列の値は日本語で記述してください。
 
 あなたは法人間取引の営業評価AIです。
-以下の「受注側会社」と「取引先」について公開情報を調査・分析し、指定の配点とフォーマットに従って営業適合度を日本語で評価してください。
+以下の「受注側会社」と「取引先」について公開情報を調査・分析し、指定の配点に従って営業適合度を評価し、
+下記のJSON構造に厳密に従って出力してください。
 
 ■入力情報
 受注側会社：{a}
 取引先：{b}
 
 ■評価ルール・配点基準
-1. 取引先の本社所在地を公開情報から確認し出力すること（確認できない場合は「確認できません」とすること）。
+1. 取引先の本社所在地を公開情報から確認すること（確認できない場合は文字列"確認できません"とすること）。
 2. 公開情報から確認できない内容は推測で補完しないこと。
-3. 評価は「SES・システム開発評価」と「AIドリブン開発評価」の2区分を独立して各100点満点で評価すること（合算点・平均点は作成しない）。
-4. 総合判定の基準：
-   - 80～100点：優先的に営業検討
-   - 60～79点：有望
-   - 40～59点：慎重に検討
-   - 0～39点：営業優先度低め
-5. 理由文、自由コメント、アドバイス、追加確認事項等は一切出力しないこと。
+3. 評価は「SES・システム開発評価」と「AIドリブン開発評価」の2区分を独立して評価すること（合算・平均は行わない）。
+4. 各区分の項目と満点は以下の通り。
+   fit（商品・サービス適合度）：25点満点
+   scale（事業規模・受注可能性）：20点満点
+   continuity（取引の継続性）：15点満点
+   growth（売上拡大の可能性）：15点満点
+   strategy（戦略的メリット）：10点満点
+   trust（信用・支払面の安心度）：10点満点
+   info（公開情報の十分さ）：5点満点
+5. totalは上記7項目の合計とすること（100点満点）。
+6. judgementは以下の基準に従った日本語の判定文とすること。
+   80～100点：優先的に営業検討
+   60～79点：有望
+   40～59点：慎重に検討
+   0～39点：営業優先度低め
 
-■出力フォーマット（以下の日本語フォーマットをそのまま出力すること）
+■出力するJSON構造（このキー名・階層をそのまま使用すること）
 
-取引先：
-{b}
+{{
+  "headquarters": "取引先の本社所在地",
+  "ses": {{
+    "fit": 0,
+    "scale": 0,
+    "continuity": 0,
+    "growth": 0,
+    "strategy": 0,
+    "trust": 0,
+    "info": 0,
+    "total": 0,
+    "judgement": "判定文"
+  }},
+  "ai": {{
+    "fit": 0,
+    "scale": 0,
+    "continuity": 0,
+    "growth": 0,
+    "strategy": 0,
+    "trust": 0,
+    "info": 0,
+    "total": 0,
+    "judgement": "判定文"
+  }}
+}}
 
-取引先本社所在地：
-[所在地または確認できません]
+上記のJSON以外の文字は一切出力しないでください。"""
+
+def strip_code_fence(text):
+    """
+    Geminiが ```json ... ``` のようにコードブロック記号を
+    付けて返してくる場合があるため、それを取り除く。
+    """
+    stripped = text.strip()
+    stripped = re.sub(r"^```[a-zA-Z]*\s*", "", stripped)
+    stripped = re.sub(r"```\s*$", "", stripped)
+    return stripped.strip()
 
 
-【SES・システム開発評価】
-
-受注側の商品・サービスとの適合度：[点数] / 25
-取引先の事業規模・受注可能性　　：[点数] / 20
-取引の継続性　　　　　　　　　　：[点数] / 15
-売上拡大の可能性　　　　　　　　：[点数] / 15
-戦略的メリット　　　　　　　　　：[点数] / 10
-信用・支払面の安心度　　　　　　：[点数] / 10
-公開情報の十分さ　　　　　　　　：[点数] / 5
-
-合計：
-[合計点] / 100
-
-総合判定：
-[総合判定文]
+def judgement_level(total):
+    """
+    点数帯に応じたCSS用のレベル文字列を返す。
+    """
+    if total >= 80:
+        return "high"
+    if total >= 60:
+        return "mid-high"
+    if total >= 40:
+        return "mid-low"
+    return "low"
 
 
-【AIドリブン開発評価】
+def judgement_text(total):
+    """
+    点数帯に応じた正しい判定文を返す。
+    """
+    if total >= 80:
+        return "優先的に営業検討"
+    if total >= 60:
+        return "有望"
+    if total >= 40:
+        return "慎重に検討"
+    return "営業優先度低め"
 
-受注側の商品・サービスとの適合度：[点数] / 25
-取引先の事業規模・受注可能性　　：[点数] / 20
-取引の継続性　　　　　　　　　　：[点数] / 15
-売上拡大の可能性　　　　　　　　：[点数] / 15
-戦略的メリット　　　　　　　　　：[点数] / 10
-信用・支払面の安心度　　　　　　：[点数] / 10
-公開情報の十分さ　　　　　　　　：[点数] / 5
 
-合計：
-[合計点] / 100
+def normalize_section(section):
+    """
+    1つの評価区分（ses または ai）の辞書を受け取り、
+    ・各項目を整数化する
+    ・合計を再計算し、Geminiの値と異なっていても静かに補正する
+    ・判定文も点数帯に応じて静かに補正する
+    ・レベル（CSSクラス用）を付与する
+    """
+    def to_int(value):
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return 0
 
-総合判定：
-[総合判定文]"""
+    fit = to_int(section.get("fit"))
+    scale = to_int(section.get("scale"))
+    continuity = to_int(section.get("continuity"))
+    growth = to_int(section.get("growth"))
+    strategy = to_int(section.get("strategy"))
+    trust = to_int(section.get("trust"))
+    info = to_int(section.get("info"))
+
+    calculated_total = fit + scale + continuity + growth + strategy + trust + info
+
+    if calculated_total > 100:
+        calculated_total = 100
+    if calculated_total < 0:
+        calculated_total = 0
+
+    return {
+        "fit": fit,
+        "scale": scale,
+        "continuity": continuity,
+        "growth": growth,
+        "strategy": strategy,
+        "trust": trust,
+        "info": info,
+        "total": calculated_total,
+        "judgement": judgement_text(calculated_total),
+        "level": judgement_level(calculated_total),
+    }
+
+
+def parse_gemini_json(raw_text):
+    """
+    Geminiの応答テキストをJSONとして解析し、
+    Python側で検算・補正した結果の辞書を返す。
+    解析に失敗した場合は例外を発生させる。
+    """
+    cleaned = strip_code_fence(raw_text)
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "Geminiの応答をJSONとして解析できませんでした。"
+        ) from error
+
+    if "ses" not in data or "ai" not in data:
+        raise RuntimeError(
+            "Geminiの応答に必要な評価データ（ses/ai）が含まれていません。"
+        )
+
+    headquarters = data.get("headquarters")
+    if not isinstance(headquarters, str) or not headquarters.strip():
+        headquarters = "確認できません"
+
+    return {
+        "headquarters": headquarters,
+        "ses": normalize_section(data["ses"]),
+        "ai": normalize_section(data["ai"]),
+    }
+
 
 def generate_gemini_content(prompt_text):
     if gemini_client is None:
@@ -449,6 +691,7 @@ def generate_gemini_content(prompt_text):
             f"詳細: {error_text}"
         ) from error
 
+
 def build_html_response(**kwargs):
     rendered = render_template_string(
         RAW_HTML,
@@ -462,6 +705,7 @@ def build_html_response(**kwargs):
 
     return response
 
+
 @app.route("/assets/app.css", methods=["GET"])
 def app_css():
     response = make_response(CSS, 200)
@@ -471,13 +715,14 @@ def app_css():
 
     return response
 
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "GET":
         return build_html_response(
             a="",
             b="",
-            res=None,
+            result=None,
             err=None
         )
 
@@ -488,18 +733,20 @@ def index():
         return build_html_response(
             a=a,
             b=b,
-            res=None,
+            result=None,
             err="両方の会社名を入力してください。"
         )
 
     try:
         prompt_text = PROMPT.format(a=a, b=b)
-        result_text = generate_gemini_content(prompt_text)
+        raw_result_text = generate_gemini_content(prompt_text)
+        parsed_result = parse_gemini_json(raw_result_text)
+        parsed_result["company_b"] = b
 
         return build_html_response(
             a=a,
             b=b,
-            res=result_text,
+            result=parsed_result,
             err=None
         )
 
@@ -509,11 +756,11 @@ def index():
         return build_html_response(
             a=a,
             b=b,
-            res=None,
+            result=None,
             err=f"AI応答エラー: {str(error)}"
         )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-    
