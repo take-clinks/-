@@ -7,11 +7,8 @@ from google import genai
 
 app = Flask(__name__)
 
-# UI更新をブラウザへ確実に反映するため、バージョン番号だけ更新しています。
-APP_VERSION = "2026-08-GEMINI-3-6-FLASH-JSON-TABLE-v1"
+APP_VERSION = "2026-08-GEMINI-3-6-FLASH-JSON-TABLE-TOKEN-SAVE-v1"
 
-# Google公式クイックスタートで確認した現在のモデル名。
-# 自動探索・候補切替は行わず、この公式モデルだけを使用する。
 GEMINI_MODEL = "gemini-3.6-flash"
 
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -462,72 +459,28 @@ button:disabled {
 }
 """
 
-PROMPT = """【最重要命令】以下の指示に厳密に従い、有効なJSONのみを出力してください。
-JSON以外の文字（説明文、前置き、後書き、コードブロック記号```等）は一切出力しないでください。
-すべての文字列の値は日本語で記述してください。
+# トークン削減版PROMPT。
+# ・説明文を短縮
+# ・判定基準の説明を削除（Python側で必ず再計算・上書きするため不要）
+# ・JSON構造は維持（データ取得に必須のため削らない）
+PROMPT = """法人間取引の営業評価AIとして、下記2社を公開情報のみで評価し、
+JSON構造のみを出力してください。説明文・前置き・コードブロック記号は禁止。
+値がすべて日本語。推測で補完しない。
 
-あなたは法人間取引の営業評価AIです。
-以下の「受注側会社」と「取引先」について公開情報を調査・分析し、指定の配点に従って営業適合度を評価し、
-下記のJSON構造に厳密に従って出力してください。
-
-■入力情報
-受注側会社：{a}
+受注側：{a}
 取引先：{b}
 
-■評価ルール・配点基準
-1. 取引先の本社所在地を公開情報から確認すること（確認できない場合は文字列"確認できません"とすること）。
-2. 公開情報から確認できない内容は推測で補完しないこと。
-3. 評価は「SES・システム開発評価」と「AIドリブン開発評価」の2区分を独立して評価すること（合算・平均は行わない）。
-4. 各区分の項目と満点は以下の通り。
-   fit（商品・サービス適合度）：25点満点
-   scale（事業規模・受注可能性）：20点満点
-   continuity（取引の継続性）：15点満点
-   growth（売上拡大の可能性）：15点満点
-   strategy（戦略的メリット）：10点満点
-   trust（信用・支払面の安心度）：10点満点
-   info（公開情報の十分さ）：5点満点
-5. totalは上記7項目の合計とすること（100点満点）。
-6. judgementは以下の基準に従った日本語の判定文とすること。
-   80～100点：優先的に営業検討
-   60～79点：有望
-   40～59点：慎重に検討
-   0～39点：営業優先度低め
+配点（各区分100点満点、SES区分とAI区分は独立evaluate）：
+fit25 scale20 continuity15 growth15 strategy10 trust10 info5
 
-■出力するJSON構造（このキー名・階層をそのまま使用すること）
-
+出力JSON：
 {{
-  "headquarters": "取引先の本社所在地",
-  "ses": {{
-    "fit": 0,
-    "scale": 0,
-    "continuity": 0,
-    "growth": 0,
-    "strategy": 0,
-    "trust": 0,
-    "info": 0,
-    "total": 0,
-    "judgement": "判定文"
-  }},
-  "ai": {{
-    "fit": 0,
-    "scale": 0,
-    "continuity": 0,
-    "growth": 0,
-    "strategy": 0,
-    "trust": 0,
-    "info": 0,
-    "total": 0,
-    "judgement": "判定文"
-  }}
-}}
-
-上記のJSON以外の文字は一切出力しないでください。"""
+  "headquarters": "取引先本社所在地。不明なら確認できません",
+  "ses": {{"fit":0,"scale":0,"continuity":0,"growth":0,"strategy":0,"trust":0,"info":0,"total":0,"judgement":""}},
+  "ai": {{"fit":0,"scale":0,"continuity":0,"growth":0,"strategy":0,"trust":0,"info":0,"total":0,"judgement":""}}
+}}"""
 
 def strip_code_fence(text):
-    """
-    Geminiが ```json ... ``` のようにコードブロック記号を
-    付けて返してくる場合があるため、それを取り除く。
-    """
     stripped = text.strip()
     stripped = re.sub(r"^```[a-zA-Z]*\s*", "", stripped)
     stripped = re.sub(r"```\s*$", "", stripped)
@@ -535,9 +488,6 @@ def strip_code_fence(text):
 
 
 def judgement_level(total):
-    """
-    点数帯に応じたCSS用のレベル文字列を返す。
-    """
     if total >= 80:
         return "high"
     if total >= 60:
@@ -548,9 +498,6 @@ def judgement_level(total):
 
 
 def judgement_text(total):
-    """
-    点数帯に応じた正しい判定文を返す。
-    """
     if total >= 80:
         return "優先的に営業検討"
     if total >= 60:
@@ -561,13 +508,6 @@ def judgement_text(total):
 
 
 def normalize_section(section):
-    """
-    1つの評価区分（ses または ai）の辞書を受け取り、
-    ・各項目を整数化する
-    ・合計を再計算し、Geminiの値と異なっていても静かに補正する
-    ・判定文も点数帯に応じて静かに補正する
-    ・レベル（CSSクラス用）を付与する
-    """
     def to_int(value):
         try:
             return int(round(float(value)))
@@ -604,11 +544,6 @@ def normalize_section(section):
 
 
 def parse_gemini_json(raw_text):
-    """
-    Geminiの応答テキストをJSONとして解析し、
-    Python側で検算・補正した結果の辞書を返す。
-    解析に失敗した場合は例外を発生させる。
-    """
     cleaned = strip_code_fence(raw_text)
 
     try:
